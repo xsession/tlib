@@ -15,6 +15,7 @@
 #include "arch_callbacks.h"
 #include "tb-helper.h"
 #include "debug.h"
+#include <stdio.h>
 
 /* TCG global temporaries — CPU registers */
 static TCGv cpu_w;       /* W (WREG) */
@@ -23,6 +24,8 @@ static TCGv cpu_status;  /* STATUS */
 static TCGv cpu_fsr;     /* FSR */
 static TCGv cpu_pclath;  /* PCLATH */
 static TCGv cpu_intcon;  /* INTCON */
+static TCGv cpu_sp;      /* hardware stack pointer (0-7) */
+static TCGv cpu_stack[8];/* hardware call stack slots */
 
 void translate_init(void)
 {
@@ -33,6 +36,12 @@ void translate_init(void)
     cpu_fsr     = tcg_global_mem_new_i32(TCG_AREG0, OFFSET(fsr),     "FSR");
     cpu_pclath  = tcg_global_mem_new_i32(TCG_AREG0, OFFSET(pclath),  "PCLATH");
     cpu_intcon  = tcg_global_mem_new_i32(TCG_AREG0, OFFSET(intcon),  "INTCON");
+    cpu_sp      = tcg_global_mem_new_i32(TCG_AREG0, OFFSET(sp),      "SP");
+    for(int i = 0; i < 8; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "HSTACK%d", i);
+        cpu_stack[i] = tcg_global_mem_new_i32(TCG_AREG0, OFFSET(stack[i]), name);
+    }
 #undef OFFSET
 }
 
@@ -59,20 +68,171 @@ static inline void gen_goto_tb(TranslationBlock *tb, int n,
     }
 }
 
-/* Helper: load a byte from DATA space (flat modelling — bank ignored for now) */
+/* Load a byte from DATA space.
+ * Fixed core SFRs are kept in CPUState (they are also touched by the
+ * translator itself, so they must not only live in device memory):
+ *   f=0 INDF (indirect via FSR), f=2 PCL, f=3 STATUS, f=4 FSR.
+ * Everything else is a real memory-mapped SFR/GPR in the 0x200000 window. */
 static void gen_load_freg(TCGv dst, uint8_t f)
 {
-    TCGv addr = tcg_const_i32(PIC16_DATA_BASE + f);
-    tcg_gen_qemu_ld8u(dst, addr, 0);
-    tcg_temp_free_i32(addr);
+    TCGv addr;
+    switch (f)
+    {
+    case 2: /* PCL */
+        tcg_gen_mov_i32(dst, cpu_pc);
+        tcg_gen_andi_i32(dst, dst, 0xFF);
+        return;
+    case 3: /* STATUS */
+        tcg_gen_mov_i32(dst, cpu_status);
+        tcg_gen_andi_i32(dst, dst, 0x9F); /* C,DC,Z,RP0,RP1 */
+        return;
+    case 4: /* FSR */
+        tcg_gen_mov_i32(dst, cpu_fsr);
+        return;
+    case 0: /* INDF — indirect through FSR */
+    {
+        TCGv t  = tcg_temp_new_i32();
+        int l2  = gen_new_label();
+        int l3  = gen_new_label();
+        int l4  = gen_new_label();
+        int l_end = gen_new_label();
+        tcg_gen_mov_i32(t, cpu_fsr);
+        tcg_gen_andi_i32(t, t, 0x7F);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 2, l2);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 3, l3);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 4, l4);
+        addr = tcg_const_i32(PIC16_DATA_BASE);
+        tcg_gen_add_i32(addr, addr, t);
+        tcg_gen_qemu_ld8u(dst, addr, 0);
+        tcg_gen_br(l_end);
+        gen_set_label(l2);
+        tcg_gen_mov_i32(dst, cpu_pc);
+        tcg_gen_andi_i32(dst, dst, 0xFF);
+        tcg_gen_br(l_end);
+        gen_set_label(l3);
+        tcg_gen_mov_i32(dst, cpu_status);
+        tcg_gen_br(l_end);
+        gen_set_label(l4);
+        tcg_gen_mov_i32(dst, cpu_fsr);
+        tcg_gen_br(l_end);
+        gen_set_label(l_end);
+        tcg_temp_free_i32(t);
+        tcg_temp_free_i32(addr);
+        return;
+    }
+    default:
+        addr = tcg_const_i32(PIC16_DATA_BASE + f);
+        tcg_gen_qemu_ld8u(dst, addr, 0);
+        tcg_temp_free_i32(addr);
+        return;
+    }
 }
 
-/* Helper: store a byte to DATA space */
+/* Store a byte to DATA space (see gen_load_freg for the core-SFR split).
+ * A write to PCL performs a computed jump: new PC = (PCLATH & 0x1F)<<8 | value. */
 static void gen_store_freg(uint8_t f, TCGv src)
 {
-    TCGv addr = tcg_const_i32(PIC16_DATA_BASE + f);
-    tcg_gen_qemu_st8(src, addr, 0);
-    tcg_temp_free_i32(addr);
+    TCGv addr;
+    switch (f)
+    {
+    case 2: /* PCL — computed jump */
+    {
+        TCGv t = tcg_temp_new_i32();
+        tcg_gen_andi_i32(t, cpu_pclath, 0x1F);
+        tcg_gen_shli_i32(t, t, 8);
+        tcg_gen_or_i32(t, t, src);
+        tcg_gen_andi_i32(t, t, 0x1FFF);
+        tcg_gen_mov_i32(cpu_pc, t);
+        tcg_temp_free_i32(t);
+        return;
+    }
+    case 3: /* STATUS */
+        tcg_gen_mov_i32(cpu_status, src);
+        tcg_gen_andi_i32(cpu_status, cpu_status, 0x9F);
+        return;
+    case 4: /* FSR */
+        tcg_gen_mov_i32(cpu_fsr, src);
+        tcg_gen_andi_i32(cpu_fsr, cpu_fsr, 0x7F);
+        return;
+    case 0: /* INDF — indirect through FSR */
+    {
+        TCGv t  = tcg_temp_new_i32();
+        int l2  = gen_new_label();
+        int l3  = gen_new_label();
+        int l4  = gen_new_label();
+        int l_end = gen_new_label();
+        tcg_gen_mov_i32(t, cpu_fsr);
+        tcg_gen_andi_i32(t, t, 0x7F);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 2, l2);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 3, l3);
+        tcg_gen_brcondi_i32(TCG_COND_EQ, t, 4, l4);
+        addr = tcg_const_i32(PIC16_DATA_BASE);
+        tcg_gen_add_i32(addr, addr, t);
+        tcg_gen_qemu_st8(src, addr, 0);
+        tcg_gen_br(l_end);
+        gen_set_label(l2);
+        tcg_gen_andi_i32(t, cpu_pclath, 0x1F);
+        tcg_gen_shli_i32(t, t, 8);
+        tcg_gen_or_i32(t, t, src);
+        tcg_gen_andi_i32(t, t, 0x1FFF);
+        tcg_gen_mov_i32(cpu_pc, t);
+        tcg_gen_br(l_end);
+        gen_set_label(l3);
+        tcg_gen_mov_i32(cpu_status, src);
+        tcg_gen_andi_i32(cpu_status, cpu_status, 0x9F);
+        tcg_gen_br(l_end);
+        gen_set_label(l4);
+        tcg_gen_mov_i32(cpu_fsr, src);
+        tcg_gen_andi_i32(cpu_fsr, cpu_fsr, 0x7F);
+        tcg_gen_br(l_end);
+        gen_set_label(l_end);
+        tcg_temp_free_i32(t);
+        tcg_temp_free_i32(addr);
+        return;
+    }
+    default:
+        addr = tcg_const_i32(PIC16_DATA_BASE + f);
+        tcg_gen_qemu_st8(src, addr, 0);
+        tcg_temp_free_i32(addr);
+        return;
+    }
+}
+
+/* Push the return address (next word) onto the 8-level hardware stack. */
+static void gen_stack_push(void)
+{
+    TCGv ret = tcg_temp_new_i32();
+    TCGv idx = tcg_temp_new_i32();
+    TCGv base = tcg_temp_new_i32();
+    tcg_gen_addi_i32(ret, cpu_pc, 1);
+    tcg_gen_andi_i32(ret, ret, 0x1FFF);
+    tcg_gen_andi_i32(idx, cpu_sp, 7);
+    tcg_gen_muli_i32(idx, idx, 4);
+    tcg_gen_addi_i32(base, cpu_env, offsetof(CPUState, stack));
+    tcg_gen_add_i32(base, base, idx);
+    tcg_gen_st_i32(ret, base, 0);
+    tcg_gen_addi_i32(cpu_sp, cpu_sp, 1);
+    tcg_gen_andi_i32(cpu_sp, cpu_sp, 7);
+    tcg_temp_free_i32(ret);
+    tcg_temp_free_i32(idx);
+    tcg_temp_free_i32(base);
+}
+
+/* Pop the return address from the hardware stack into PC. */
+static void gen_stack_pop(void)
+{
+    TCGv idx = tcg_temp_new_i32();
+    TCGv base = tcg_temp_new_i32();
+    tcg_gen_addi_i32(cpu_sp, cpu_sp, 7);
+    tcg_gen_andi_i32(cpu_sp, cpu_sp, 7);
+    tcg_gen_andi_i32(idx, cpu_sp, 7);
+    tcg_gen_muli_i32(idx, idx, 4);
+    tcg_gen_addi_i32(base, cpu_env, offsetof(CPUState, stack));
+    tcg_gen_add_i32(base, base, idx);
+    tcg_gen_ld_i32(cpu_pc, base, 0);
+    tcg_gen_andi_i32(cpu_pc, cpu_pc, 0x1FFF);
+    tcg_temp_free_i32(idx);
+    tcg_temp_free_i32(base);
 }
 
 /* Update Z and C flags from result in `val` */
@@ -118,10 +278,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
 
     /* ---------- RETURN (0x0008) ---------- */
     if(insn == 0x0008) {
-        /* Model: PC is restored from hardware stack via helper */
-        TCGv_i32 arg = tcg_const_i32(EXCP_RESET);
-        gen_helper_raise_exception(cpu_env, arg);
-        tcg_temp_free_i32(arg);
+        gen_stack_pop();
         goto done;
     }
 
@@ -129,9 +286,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if(insn == 0x0009) {
         /* Re-enable GIE then return */
         tcg_gen_ori_i32(cpu_intcon, cpu_intcon, INTCON_GIE);
-        TCGv_i32 arg = tcg_const_i32(EXCP_RESET);
-        gen_helper_raise_exception(cpu_env, arg);
-        tcg_temp_free_i32(arg);
+        gen_stack_pop();
         goto done;
     }
 
@@ -143,7 +298,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
 
     /* ---------- CLRWDT (0x0064) ---------- */
     if(insn == 0x0064) {
-        gen_helper_wdt_reset(cpu_env);
+        gen_helper_wdt_clrwdt(cpu_env);
         goto done;
     }
 
@@ -155,16 +310,8 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
 
     /* ---------- MOVWF f (0x008x) ---------- */
     if((insn & 0x3F80) == 0x0080) {
-        if(f == 2) { /* MOVWF PCL — computed jump */
-            TCGv newpc = tcg_temp_new_i32();
-            tcg_gen_shli_i32(newpc, cpu_pclath, 8);
-            tcg_gen_or_i32(newpc, newpc, cpu_w);
-            tcg_gen_andi_i32(newpc, newpc, 0x1FFF);
-            tcg_gen_mov_i32(cpu_pc, newpc);
-            tcg_temp_free_i32(newpc);
-        } else {
-            gen_store_freg(f, cpu_w);
-        }
+        /* f==2 (PCL) is handled inside gen_store_freg as a computed jump */
+        gen_store_freg(f, cpu_w);
         goto done;
     }
 
@@ -256,6 +403,24 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
         goto done;
     }
 
+    /* ---------- DECFSZ f,d (0x0B00-0x0BFF) — decrement, skip if zero ---------- */
+    if((insn & 0x3C00) == 0x0B00) {
+        gen_load_freg(tmp, f);
+        tcg_gen_subi_i32(res, tmp, 1);
+        tcg_gen_andi_i32(res, res, 0xFF);
+        gen_update_zc(res, NULL);
+        if(d == 0) tcg_gen_mov_i32(cpu_w, res);
+        else        gen_store_freg(f, res);
+        {
+            int l_end = gen_new_label();
+            /* result == 0 (Z set) -> no skip; otherwise skip next instruction */
+            tcg_gen_brcondi_i32(TCG_COND_EQ, res, 0, l_end);
+            tcg_gen_movi_i32(cpu_pc, dc->pc + 1);
+            gen_set_label(l_end);
+        }
+        goto done;
+    }
+
     /* ---------- CLRF f (0x018x) ---------- */
     if((insn & 0x3F80) == 0x0180) {
         TCGv zero = tcg_const_i32(0);
@@ -306,9 +471,8 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     /* ---------- RETLW k (0x34xx-37xx) ---------- */
     if((insn & 0x3C00) == 0x3400) {
         tcg_gen_movi_i32(cpu_w, k8);
-        TCGv_i32 arg = tcg_const_i32(EXCP_RESET);
-        gen_helper_raise_exception(cpu_env, arg);
-        tcg_temp_free_i32(arg);
+        tcg_gen_andi_i32(cpu_w, cpu_w, 0xFF);
+        gen_stack_pop();
         goto done;
     }
 
@@ -361,7 +525,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     /* ---------- CALL k (0x2000-27xx) ---------- */
     if((insn & 0x3800) == 0x2000) {
         uint32_t target = ((uint32_t)(env->pclath & 0x18) << 8) | k11;
-        /* Push return address (simplified — just set PC) */
+        gen_stack_push();
         tcg_gen_movi_i32(cpu_pc, target);
         goto done;
     }

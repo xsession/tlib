@@ -52,6 +52,10 @@ typedef struct CPUState {
     uint32_t pclath;     /* PCLATH — held during computed goto */
     uint32_t intcon;     /* INTCON */
     uint32_t option_reg; /* OPTION_REG */
+    uint32_t indf;       /* INDF self-alias value (used when FSR == 0) */
+    /* 8-level hardware call stack (word addresses), indexed by sp (0-7) */
+    uint32_t stack[8];
+    uint8_t  sp;
 } CPUState;
 
 static inline int cpu_mmu_index(CPUState *env)

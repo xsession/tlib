@@ -10,6 +10,9 @@ void cpu_reset(CPUState *env)
     env->pclath   = 0;
     env->intcon   = 0;
     env->option_reg = 0xFF;
+    env->indf     = 0;
+    env->sp       = 0;
+    memset(env->stack, 0, sizeof(env->stack));
 }
 
 int cpu_init(const char *cpu_model)

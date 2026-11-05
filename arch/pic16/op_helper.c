@@ -22,10 +22,12 @@ void HELPER(sleep)(CPUState *env)
     cpu_loop_exit(env);
 }
 
-void HELPER(wdt_reset)(CPUState *env)
+void HELPER(wdt_clrwdt)(CPUState *env)
 {
-    cpu_reset(env);
-    cpu_loop_exit(env);
+    (void)env;
+    /* CLRWDT restarts the watchdog; the C# layer owns the WDT timer
+     * (PIC12.WdtClrwdt -> LimitTimer restart). */
+    tlib_wdt_clrwdt();
 }
 
 void do_unaligned_access(CPUState *env, target_ulong vaddr,
