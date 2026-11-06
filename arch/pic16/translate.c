@@ -16,6 +16,7 @@
 #include "tb-helper.h"
 #include "debug.h"
 #include <stdio.h>
+#include <stdint.h>
 
 /* TCG global temporaries — CPU registers */
 static TCGv cpu_w;       /* W (WREG) */
@@ -330,7 +331,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0700) {
         gen_load_freg(tmp, f);
         tcg_gen_add_i32(res, cpu_w, tmp);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -341,7 +342,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0200) {
         gen_load_freg(tmp, f);
         tcg_gen_sub_i32(res, tmp, cpu_w);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -352,7 +353,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0500) {
         gen_load_freg(tmp, f);
         tcg_gen_and_i32(res, cpu_w, tmp);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -363,7 +364,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0400) {
         gen_load_freg(tmp, f);
         tcg_gen_or_i32(res, cpu_w, tmp);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -374,7 +375,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0600) {
         gen_load_freg(tmp, f);
         tcg_gen_xor_i32(res, cpu_w, tmp);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -385,7 +386,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0A00) {
         gen_load_freg(tmp, f);
         tcg_gen_addi_i32(res, tmp, 1);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -396,7 +397,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3C00) == 0x0300) {
         gen_load_freg(tmp, f);
         tcg_gen_subi_i32(res, tmp, 1);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(res, res, 0xFF);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
@@ -408,7 +409,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
         gen_load_freg(tmp, f);
         tcg_gen_subi_i32(res, tmp, 1);
         tcg_gen_andi_i32(res, res, 0xFF);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         if(d == 0) tcg_gen_mov_i32(cpu_w, res);
         else        gen_store_freg(f, res);
         {
@@ -433,7 +434,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     /* ---------- ADDLW k (0x3Exx/0x3Fxx) ---------- */
     if((insn & 0x3E00) == 0x3E00) {
         tcg_gen_addi_i32(res, cpu_w, k8);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(cpu_w, res, 0xFF);
         goto done;
     }
@@ -442,7 +443,7 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     if((insn & 0x3E00) == 0x3C00) {
         tcg_gen_movi_i32(tmp, k8);
         tcg_gen_sub_i32(res, tmp, cpu_w);
-        gen_update_zc(res, NULL);
+        gen_update_zc(res, 0);
         tcg_gen_andi_i32(cpu_w, res, 0xFF);
         goto done;
     }
@@ -450,21 +451,21 @@ static int disas_pic16_insn(CPUState *env, DisasContext *dc)
     /* ---------- ANDLW k (0x3900) ---------- */
     if((insn & 0x3F00) == 0x3900) {
         tcg_gen_andi_i32(cpu_w, cpu_w, k8);
-        gen_update_zc(cpu_w, NULL);
+        gen_update_zc(cpu_w, 0);
         goto done;
     }
 
     /* ---------- IORLW k (0x3800) ---------- */
     if((insn & 0x3F00) == 0x3800) {
         tcg_gen_ori_i32(cpu_w, cpu_w, k8);
-        gen_update_zc(cpu_w, NULL);
+        gen_update_zc(cpu_w, 0);
         goto done;
     }
 
     /* ---------- XORLW k (0x3A00/0x3B00) ---------- */
     if((insn & 0x3E00) == 0x3A00) {
         tcg_gen_xori_i32(cpu_w, cpu_w, k8);
-        gen_update_zc(cpu_w, NULL);
+        gen_update_zc(cpu_w, 0);
         goto done;
     }
 

@@ -1,6 +1,7 @@
 #include "cpu.h"
 #include "arch_callbacks.h"
 #include "softmmu_exec.h"
+#include <stdint.h>
 #define HELPER_H
 #include "helper.h"
 
@@ -48,6 +49,12 @@ int arch_tlb_fill(CPUState *env, target_ulong addr, int access_type,
 {
     return cpu_handle_mmu_fault(env, addr, access_type, mmu_idx,
                                 access_width, no_page_fault, paddr);
+}
+
+/* Write a 32-bit value to data memory (guest store through the MMU). */
+static void stk_addr_write(CPUState *env, uint32_t addr, uint32_t value)
+{
+    stl_data(addr, value);
 }
 
 /* Push return address onto hardware stack, then jump to vector. */
