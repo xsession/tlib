@@ -10,6 +10,21 @@
 #define HELPER_H
 #include "helper.h"
 
+void helper_c2000_al_ld(CPUState *env, uint32_t n)
+{
+    /* MOV AL, *XARn : AL <- low byte of word at XARn */
+    uint16_t w = lduw_phys(env->xar[n & 7]);
+    env->acc = (env->acc & 0xFFFFFF00u) | (w & 0xFFu);
+}
+
+void helper_c2000_al_st(CPUState *env, uint32_t n)
+{
+    /* MOV *XARn, AL : low byte of word at XARn <- AL */
+    target_phys_addr_t a = env->xar[n & 7];
+    uint16_t w = lduw_phys(a);
+    stw_phys(a, (uint16_t)((w & 0xFF00u) | (env->acc & 0xFFu)));
+}
+
 static void raise_exception(CPUState *env, uint32_t trap)
 {
     env->exception_index = trap;
@@ -76,6 +91,7 @@ void do_interrupt(CPUState *cpu_state)
         stw_phys((target_phys_addr_t)((sp + 2) * 2), (uint16_t)(cpu_state->pc & 0xFFFF));
         stw_phys((target_phys_addr_t)((sp + 3) * 2), (uint16_t)((cpu_state->pc >> 16) & 0x3F));
         cpu_state->sp = sp + 4;
+        cpu_state->rpc = cpu_state->pc;  /* ISR returns via LRETR -> RPC */
 
         /* Fetch vector from PIE vector table (based at 0xD00 in C28x word addresses) */
         uint32_t pie_base = 0xD00u;
@@ -85,7 +101,7 @@ void do_interrupt(CPUState *cpu_state)
         uint32_t hi = lduw_phys((target_phys_addr_t)((vec_addr + 1) * 2));
         cpu_state->pc = (lo | (hi << 16)) * 2;   /* byte address */
 
-        tlib_acknowledge_interrupt(vec_idx);
+        tlib_acknowledge_interrupt(vec_idx + 1);  /* GPIO number = vec_idx + 1 (input 0 is NMI-class, not dispatched) */
     } else if(vector >= EXCP_INT1 && vector <= EXCP_INT14) {
         /* CPU-level interrupt (INT1–INT14).  Vector table at 0x3F FFxx */
         uint32_t cpu_vect_base = 0x3FFFC0u;      /* byte address */
@@ -96,12 +112,13 @@ void do_interrupt(CPUState *cpu_state)
         stw_phys((target_phys_addr_t)(sp * 2),       (uint16_t)(cpu_state->pc & 0xFFFF));
         stw_phys((target_phys_addr_t)((sp + 1) * 2), (uint16_t)((cpu_state->pc >> 16) & 0x3F));
         cpu_state->sp = sp + 2;
+        cpu_state->rpc = cpu_state->pc;  /* ISR returns via LRETR -> RPC */
 
         uint32_t lo = lduw_phys((target_phys_addr_t)vec_addr);
         uint32_t hi = lduw_phys((target_phys_addr_t)(vec_addr + 2));
         cpu_state->pc = (lo | (hi << 16)) * 2;
 
-        tlib_acknowledge_interrupt(vector);
+        tlib_acknowledge_interrupt(vector - 1);  /* GPIO number = exception_index - 1 (INT1 = index 2 = GPIO 1) */
     } else {
         /* Reset */
         cpu_state->pc = 0x3FFFC0u * 2;

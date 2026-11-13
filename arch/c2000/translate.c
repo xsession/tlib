@@ -154,7 +154,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
         /* MOV ACC, #16bit immediate (sign extended to 32) */
         uint16_t imm = fetch16(pc + 2);
         tcg_gen_movi_tl(cpu_acc, (int32_t)(int16_t)imm);
-        dc->base.pc += 2;
+        dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
         return 4;
     }
 
@@ -164,7 +164,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
         TCGv tmp = tcg_const_tl((int32_t)(int16_t)imm);
         tcg_gen_add_tl(cpu_acc, cpu_acc, tmp);
         tcg_temp_free(tmp);
-        dc->base.pc += 2;
+        dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
         return 4;
     }
 
@@ -174,7 +174,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
         TCGv tmp = tcg_const_tl((int32_t)(int16_t)imm);
         tcg_gen_sub_tl(cpu_acc, cpu_acc, tmp);
         tcg_temp_free(tmp);
-        dc->base.pc += 2;
+        dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
         return 4;
     }
 
@@ -182,13 +182,58 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
     case 0x8C: case 0x8D: case 0x8E: case 0x8F:
     case 0xA8: case 0xA9: case 0xAA: case 0xAB: {
         /* MOV32 XARn, #22 — two-word instruction */
-        uint8_t  n    = insn & 0x7;
+        uint8_t  n;
+        if(insn <= 0x8F) {
+            /* Real C28x 16-bit-immediate XAR encodings:
+               0x8C=XAR1 0x8D=XAR0 0x8E=XAR7 0x8F=XAR6 (no high bits) */
+            static const uint8_t map16[4] = { 1, 0, 7, 6 };
+            n = map16[insn - 0x8C];
+        } else {
+            n = insn & 0x7;   /* 0xA8..0xAB -> XAR0..XAR3 (22-bit form) */
+        }
         uint16_t lo   = fetch16(pc + 2);
-        uint16_t hi_w = (uint16_t)(insn & 0x3F);
+        uint16_t hi_w = (insn >= 0xA8 && insn <= 0xAB) ? (uint16_t)(insn & 0x3F) : 0;
         uint32_t imm  = lo | ((uint32_t)(hi_w) << 16);
         tcg_gen_movi_tl(cpu_xar[n & 7], imm);
-        dc->base.pc += 2;
+        dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
         return 4;
+    }
+
+    /* ---- MOV AL, *XARn (0x92Cn) ---------------------------------- */
+    case 0x92:
+        if((insn & 0xFF00) == 0x9200 && (insn & 0x0F) >= 0xC0) {
+            gen_helper_c2000_al_ld(cpu_env, tcg_const_i32(insn & 0x7));
+            break;
+        }
+        goto unimplemented;
+
+    /* ---- MOV *XARn, AL (0x96Cn) ---------------------------------- */
+    case 0x96:
+        if((insn & 0xFF00) == 0x9600 && (insn & 0x0F) >= 0xC0) {
+            gen_helper_c2000_al_st(cpu_env, tcg_const_i32(insn & 0x7));
+            break;
+        }
+        goto unimplemented;
+
+    /* ---- MOV AL, #imm8 (0x9Axx) ---------------------------------- */
+    case 0x9A: {
+        TCGv tmp = tcg_const_tl((uint32_t)(insn & 0xFF));
+        tcg_gen_andi_tl(cpu_acc, cpu_acc, 0xFFFFFF00u);
+        tcg_gen_or_tl(cpu_acc, cpu_acc, tmp);
+        tcg_temp_free(tmp);
+        break;
+    }
+
+    /* ---- ADDB AL, #imm8 (0x9Cxx) --------------------------------- */
+    case 0x9C: {
+        TCGv tmp = tcg_const_tl((uint32_t)(insn & 0xFF));
+        tcg_gen_andi_tl(cpu_acc, cpu_acc, 0xFFFFFF00u);
+        tcg_gen_ext8u_tl(tmp, cpu_acc);
+        tcg_gen_addi_tl(tmp, tmp, (insn & 0xFF));
+        tcg_gen_andi_tl(tmp, tmp, 0xFFu);
+        tcg_gen_or_tl(cpu_acc, cpu_acc, tmp);
+        tcg_temp_free(tmp);
+        break;
     }
 
     /* ---- MOVL P, ACC (0x01xx) ------------------------------------ */
@@ -227,7 +272,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
         tcg_gen_mov_tl(cpu_rpc, retaddr);
         tcg_temp_free(retaddr);
         gen_jump(dc, target);
-        dc->base.pc += 2;
+        dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
         return 4;
     }
 
@@ -251,7 +296,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
         break;
     }
 
-    dc->base.pc += 2;
+    dc->base.pc += 4;  /* pc is a byte address: 2 words = 4 bytes */
     return 2;
 }
 
