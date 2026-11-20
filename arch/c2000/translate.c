@@ -201,7 +201,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
 
     /* ---- MOV AL, *XARn (0x92Cn) ---------------------------------- */
     case 0x92:
-        if((insn & 0xFF00) == 0x9200 && (insn & 0x0F) >= 0xC0) {
+        if((insn & 0xFF00) == 0x9200 && (insn & 0x0F) >= 0xC) {
             gen_helper_c2000_al_ld(cpu_env, tcg_const_i32(insn & 0x7));
             break;
         }
@@ -209,7 +209,7 @@ static int disas_c2000_insn(CPUState *env, DisasContext *dc)
 
     /* ---- MOV *XARn, AL (0x96Cn) ---------------------------------- */
     case 0x96:
-        if((insn & 0xFF00) == 0x9600 && (insn & 0x0F) >= 0xC0) {
+        if((insn & 0xFF00) == 0x9600 && (insn & 0x0F) >= 0xC) {
             gen_helper_c2000_al_st(cpu_env, tcg_const_i32(insn & 0x7));
             break;
         }
